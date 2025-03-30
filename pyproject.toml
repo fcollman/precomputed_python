@@ -13,6 +13,7 @@ dependencies = [
     "neuroglancer>=2.40.1",
     "pandas>=2.2.3",
     "rtree>=1.4.0",
+    "ruff>=0.11.2",
     "tensorstore>=0.1.69",
 ]
 authors = [

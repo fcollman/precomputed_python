@@ -28,6 +28,7 @@ from jsonschema import validate, RefResolver, ValidationError
 import numpy as np
 import rtree  # type: ignore
 import asyncio
+import pandas as pd
 
 __version__ = "0.0.1"
 
@@ -177,6 +178,7 @@ class AnnotationReader:
                 ts_spec["driver"] = "neuroglancer_precomputed"
 
             self.ts_by_id = ts.KvStore.open(ts_spec).result()
+
         if "relationships" in self.info.keys():
             self.relationship_ts_dict = {}
             for relationship in self.info["relationships"]:
@@ -189,6 +191,46 @@ class AnnotationReader:
                     ts_spec["driver"] = "neuroglancer_precomputed"
                 self.relationship_ts_dict[name] = ts.KvStore.open(ts_spec).result()
 
+    def get_all_annotation_ids(self):
+        """Get all annotation IDs from the kv store.
+
+        Returns:
+            np.array: An array of all annotation IDs.
+        """
+        if self.ts_by_id is None:
+            raise ValueError("No by_id information found in the info file.")
+        all_ids = self.ts_by_id.list().result()
+        id_column = np.frombuffer(b"".join(all_ids), dtype=">u8")
+        return id_column
+
+    def get_all_annotations(self, max_annotations=1_000_000):
+        """get all annotations from the kv store. Warning, if the number of annotations is very large
+        downloading all the keys will cause large amounts of memory to be used.
+
+        After downloading the keys, this will error if the number of annotations is more than max_annotations.
+
+
+        Args:
+            max_annotations (_type_, optional): Maximum number of annotations to download. Defaults to 1_000_000.
+
+
+        """
+
+        all_ids = self.ts_by_id.list().result()
+        if len(all_ids) > max_annotations:
+            raise ValueError(
+                f"Number of annotations ({len(all_ids)}) exceeds the maximum allowed ({max_annotations})."
+            )
+        id_column = np.frombuffer(b"".join(all_ids), dtype=">u8")
+        futures = [self.ts_by_id.read(id_) for id_ in all_ids]
+        # await asyncio.wait(futures, return_when=asyncio.ALL_COMPLETED)
+        all_ann_bytes = [b.result() for b in futures]
+        anns = [self._decode_annotation(ann_bytes.value) for ann_bytes in all_ann_bytes]
+        df = pd.DataFrame(anns)
+        df['ID']=id_column
+        df.set_index('ID', inplace=True)
+        return df
+
     async def iter_all_ann(
         self,
         chunk_size: int = 1_000_000,
@@ -196,8 +238,8 @@ class AnnotationReader:
         max_key: int = 1_000_000_000,
     ):
         """
-        Generator that yields all keys from `kv_store` from 0 to `max_key`,
-        retrieving them in chunks of `chunk_size` behind the scenes.
+        Asynchronous generator that yields decoded annotations from `kv_store`
+        in chunks, downloading and decoding them in parallel.
 
         Args:
             chunk_size (int): The number of keys to retrieve in each chunk.
@@ -206,7 +248,7 @@ class AnnotationReader:
             max_key (int): The ending key. Default is 1,000,000,000.
 
         Yields:
-            dict: A
+            dict: Decoded annotation.
         """
         i = min_key
         while i < max_key:
@@ -222,15 +264,35 @@ class AnnotationReader:
                 inclusive_min=start_bytes, exclusive_max=end_bytes
             )
 
-            # List the keys for this chunk, and yield them
-            keys = self.ts_by_id.list(key_range).result()
-            if len(keys) > 0:
-                futures = [self.ts_by_id.read(id_) for id_ in keys]
-                # await asyncio.gather(*futures)  # wait for all futures to complete
-                for future in futures:
-                    yield self._decode_annotation(future.result().value)
+            # List the keys for this chunk
+            keys = await self.ts_by_id.list(key_range)
+
+            if keys:
+                # Create asynchronous tasks for downloading and decoding
+                tasks = [self._download_and_decode_annotation(key) for key in keys]
+
+                # Process tasks as they complete
+                for task in asyncio.as_completed(tasks):
+                    annotation = await task
+                    yield annotation
 
             i = end_int
+
+    async def _download_and_decode_annotation(self, key):
+        """
+        Asynchronously downloads and decodes a single annotation.
+
+        Args:
+            key: The key of the annotation to download.
+
+        Returns:
+            dict: Decoded annotation.
+        """
+        # Download the annotation
+        result = await self.ts_by_id.read(key)
+
+        # Decode the annotation
+        return self._decode_annotation(result.value)
 
     # Usage example:
     # for key in iter_all_keys(pre_ann.ts_by_id):
@@ -246,6 +308,16 @@ class AnnotationReader:
                 ann_dict[p.id] = label
         return ann_dict
 
+    def __post_process_dataframe(self, df):
+        """Post-process the DataFrame to handle enum properties."""
+        
+        for p in self.properties:
+            if p.enum_labels:
+                df[p.id]=df[p.id].replace(
+                    {id: label for id, label in zip(p.enum_values,p.enum_labels)}
+                )
+        return df
+
     def decode_multiple_annotations(self, annbytes):
         n_annotations = struct.unpack("<Q", annbytes[:8])[0]
         offset = 8
@@ -255,8 +327,41 @@ class AnnotationReader:
             dtype=self.dtype,
         )
         offset += self.itemsize * n_annotations
-        # ids = np.frombuffer(annbytes[offset : offset + 8 * n_annotations], dtype=">u8")
-        return annarray
+
+        ids = np.frombuffer(annbytes[offset : offset + 8 * n_annotations], dtype="<u8")
+
+        records = []
+        for row in annarray:
+            record = {name: row[name].tolist() if isinstance(row[name], np.ndarray) else row[name]
+                    for name in annarray.dtype.names}
+            records.append(record)
+
+        # Create DataFrame
+        df = pd.DataFrame(records, index=pd.Series(ids, name='ID'))
+
+        return self.__post_process_dataframe(df)
+
+    def get_by_relationship(self, relationship: str, related_id: int):
+        if "relationships" not in self.info.keys():
+            raise ValueError("No relationships found in the info file.")
+
+        # Check if all provided relationships are valid
+
+        if relationship not in [rel["id"] for rel in self.info["relationships"]]:
+            raise ValueError(
+                f"Invalid relationship '{key}' provided. Must be one of {self.relationship_ts_dict.keys()}"
+            )
+
+        # Get all annotations
+        rel_ts = self.relationship_ts_dict[relationship]
+        key = np.ascontiguousarray(related_id, dtype=">u8").tobytes()
+        annbytes = rel_ts[key]
+        if annbytes is None:
+            return pd.DataFrame()  # No annotations found for this relationship
+        # Decode the annotations
+        df = self.decode_multiple_annotations(annbytes)
+        # Process each annotation to decode its properties
+        return self.decode_multiple_annotations(annbytes)
 
     def get_by_id(self, id):
         if "by_id" not in self.info.keys():
@@ -267,8 +372,7 @@ class AnnotationReader:
         # convert id to binary representation of a uint64
         key = np.ascontiguousarray(id, dtype=">u8").tobytes()
         value = self.ts_by_id[key]
-        ann_dict = self._decode_annotation(value)
-        return self._process_enums(ann_dict)
+        return self._decode_annotation(value)
 
     def _process_geometry(self, ann_dict):
         geom = ann_dict.pop("geometry")
@@ -300,7 +404,7 @@ class AnnotationReader:
             ann_dict[relationship["id"]] = relations
             offset += 4 + n_rel * 8
         ann_dict = self._process_geometry(ann_dict)
-
+        ann_dict = self._process_enums(ann_dict)
         return ann_dict
 
 
