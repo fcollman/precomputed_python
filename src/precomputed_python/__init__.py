@@ -143,7 +143,7 @@ class AnnotationReader:
         info_future = ts.open(ts_spec).result()
         info = info_future.read().result().item()
         validate_json(info, "PrecomputedAnnotation", schemas)
-        self.info = info
+        self._info = info
         self.info["annotation_type"] = self.info["annotation_type"].lower()
         self.annotation_type = self.info["annotation_type"]
 
@@ -256,7 +256,7 @@ class AnnotationReader:
         all_ann_bytes = [b.result() for b in futures]
         anns = [self._decode_annotation(ann_bytes.value) for ann_bytes in all_ann_bytes]
         df = pd.DataFrame(anns)
-        df['ID'] = [int(id_) for id_ in all_ids]
+        df['ID'] = [int(id_) for id_ in id_column]
         df.set_index('ID', inplace=True)
 
         return self.__post_process_dataframe(df)
@@ -328,15 +328,10 @@ class AnnotationReader:
     # for key in iter_all_keys(pre_ann.ts_by_id):
     #     do_something_with(key)
 
-    def get_info(self):
-        return self.info
+    @property
+    def info(self):
+        return self._info
 
-    def _process_enums(self, ann_dict):
-        for p in self.properties:
-            if p.enum_labels:
-                label = np.array(p.enum_labels)[ann_dict[p.id] == p.enum_values][0]
-                ann_dict[p.id] = label
-        return ann_dict
 
     def __post_process_dataframe(self, df):
         """Post-process the DataFrame to handle enum properties."""
@@ -349,6 +344,14 @@ class AnnotationReader:
         return df
 
     def decode_multiple_annotations(self, annbytes):
+        """Decode multiple annotations from bytes.
+
+        Args:
+            annbytes (bytes): The bytes to decode.
+
+        Returns:
+            pd.DataFrame: A DataFrame of decoded annotations.
+        """
         n_annotations = struct.unpack("<Q", annbytes[:8])[0]
         offset = 8
         ending = offset + n_annotations * self.itemsize
@@ -372,6 +375,24 @@ class AnnotationReader:
         return self.__post_process_dataframe(df)
 
     def get_by_relationship(self, relationship: str, related_id: int):
+        """ Get annotations by relationship. 
+        Will not include any relationships this ID has.
+        i.e. if the relationship is "parent" and the ID is 1234,
+        this will return all annotations that have parent=1234 as a relationship property.
+
+        Args:
+            relationship (str): The name of the relationship to filter by based on the info file.
+            see self.info['relationships'] for the list of relationships.
+            related_id (int): the ID of the relationship.
+
+        Raises:
+            ValueError: If relationships are not found in the info file.
+            ValueError: If the specific relationship is not found in the info file.
+
+        Returns:
+            pd.DataFrame: A DataFrame of annotations that have the specified relationship (does not include relationships)
+            index is the annotation ID.
+        """
         if "relationships" not in self.info.keys():
             raise ValueError("No relationships found in the info file.")
 
@@ -396,6 +417,18 @@ class AnnotationReader:
         return self.decode_multiple_annotations(annbytes)
 
     def get_by_id(self, id):
+        """Get an annotation by its ID. Will include any relationships this ID has.
+
+        Args:
+            id (int): The ID of the annotation to retrieve.
+
+        Raises:
+            ValueError: If a by_id index is not found in the info file.
+            ValueError: If the by_id type is unknown.
+
+        Returns:
+            dict: The annotation with the specified ID as a dictionary.
+        """
         if "by_id" not in self.info.keys():
             raise ValueError("No by_id information found in the info file.")
         if self.ts_by_id is None:
@@ -411,6 +444,20 @@ class AnnotationReader:
         return self._decode_annotation(value)
 
     def _process_geometry(self, ann_dict):
+        """ Process the geometry of the annotation. Will convert the geometry
+        to the appropriate fields based on the annotation type.
+        This is used to convert the geometry field in the annotation
+        to the appropriate fields for the annotation type.  
+        For example, for a point annotation, the geometry field will be
+        converted to a point column, but for a line it will be converted
+        to point_a and point_b.
+        
+        Args:
+            ann_dict (dict): The annotation dictionary containing the geometry.
+
+        Returns:
+            dict: The processed annotation dictionary with geometry fields.
+        """
         geom = ann_dict.pop("geometry")
         if self.annotation_type == "line":
             ann_dict["point_a"] = geom[: self.coordinate_space.rank]
@@ -426,6 +473,15 @@ class AnnotationReader:
         return ann_dict
 
     def _decode_annotation(self, annbytes):
+        """Decode a single annotation from bytes.
+
+        Args:
+            annbytes (bytes): The bytes to decode.
+
+        Returns:
+            dict: The decoded annotation as a dictionary.
+        """
+
         # Decode the annotation
         dt = self.dtype
         ann_array = np.frombuffer(annbytes[: dt.itemsize], dtype=dt)[0]
@@ -440,7 +496,6 @@ class AnnotationReader:
             ann_dict[relationship["id"]] = relations
             offset += 4 + n_rel * 8
         ann_dict = self._process_geometry(ann_dict)
-        #ann_dict = self._process_enums(ann_dict)
         return ann_dict
 
     def read_annotations_in_chunk(
@@ -448,6 +503,20 @@ class AnnotationReader:
         spatial_key: str, 
         chunk_index: Sequence[int]
     ):
+        """Read annotations in a specific chunk from the spatial kv store.
+
+        Args:
+            spatial_key (str): The key of the spatial kv store.
+            chunk_index (Sequence[int]): The index of the chunk to read within the grid of the spatial kv store.
+
+        Raises:
+            ValueError: If the spatial key is not found in the info file.
+            ValueError: If the length of chunk_index does not match the rank of the coordinate space.
+            ValueError: If the spatial type is unknown.
+
+        Returns:
+            pd.DataFrame: DataFrame of annotations in the specified chunk.
+        """
         spatial_ts, ts_type = self.spatial_ts_dict.get(spatial_key)
         if spatial_ts is None:
             raise ValueError(f"Spatial key '{spatial_key}' not found in the info file.")
