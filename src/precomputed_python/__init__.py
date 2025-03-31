@@ -147,17 +147,17 @@ class AnnotationReader:
         self.info["annotation_type"] = self.info["annotation_type"].lower()
         self.annotation_type = self.info["annotation_type"]
 
-        self.coordinate_space = coordinate_space.CoordinateSpace(
+        self._coordinate_space = coordinate_space.CoordinateSpace(
             json=info["dimensions"]
         )
 
         if "properties" in self.info.keys():
-            self.properties = [
+            self._properties = [
                 viewer_state.AnnotationPropertySpec(json_data=p)
                 for p in self.info["properties"]
             ]
         else:
-            self.properties = []
+            self._properties = []
 
         dtype = _get_dtype_for_geometry(
             self.info["annotation_type"], self.coordinate_space.rank
@@ -210,6 +210,43 @@ class AnnotationReader:
                     ts_type = "unsharded"
                 self.spatial_ts_dict[spatial["key"]] = (ts.KvStore.open(ts_spec).result(), 
                                                         ts_type)
+
+    def get_relationships(self):
+        """Get the relationships of the annotations.
+        Returns:
+            list: A list of relationships.
+        """
+        if "relationships" not in self.info.keys():
+            raise ValueError("No relationships found in the info file.")
+        return [r['key'] for r in self.info["relationships"]]
+
+    def get_property_names(self):
+        """Get the properties of the annotations.
+
+        Returns:
+            list: A list of properties.
+        """
+        if "properties" not in self.info.keys():
+            raise ValueError("No properties found in the info file.")
+        return [p["id"] for p in self.info["properties"]]
+
+    @property
+    def properties(self):
+        """Get the properties of the annotations.
+
+        Returns:
+            list[neuroglancer.viewer_state.AnnotationPropertySpec]: A list of AnnotationPropertySpec properties.
+        """
+        return self._properties
+        
+    @property
+    def coordinate_space(self):
+        """Get the coordinate space of the annotations.
+
+        Returns:
+            neuroglancer.coordinate_space.CoordinateSpace: The coordinate space.
+        """
+        return self._coordinate_space
 
     def get_all_annotation_ids(self):
         """Get all annotation IDs from the kv store.
