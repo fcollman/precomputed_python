@@ -168,28 +168,48 @@ class AnnotationReader:
 
         if "by_id" in self.info.keys():
             by_id_info = self.info["by_id"]
-
-            ts_spec = {"base": os.path.join(self.cloudpath, by_id_info["key"])}
-
             if "sharding" in by_id_info.keys():
-                ts_spec["driver"] = "neuroglancer_uint64_sharded"
-                ts_spec["metadata"] = by_id_info["sharding"]
+                ts_spec = {"base": os.path.join(self.cloudpath, by_id_info["key"]),
+                           "driver": "neuroglancer_uint64_sharded",
+                           "metadata": by_id_info["sharding"]
+                }
+                self.by_id_type = "sharded"
             else:
-                ts_spec["driver"] = "neuroglancer_precomputed"
+                ts_spec = os.path.join(self.cloudpath, by_id_info["key"]) + "/"
+                self.by_id_type = "unsharded"
 
             self.ts_by_id = ts.KvStore.open(ts_spec).result()
+
 
         if "relationships" in self.info.keys():
             self.relationship_ts_dict = {}
             for relationship in self.info["relationships"]:
                 name = relationship["id"]
-                ts_spec = {"base": os.path.join(self.cloudpath, relationship["key"])}
                 if "sharding" in relationship.keys():
-                    ts_spec["driver"] = "neuroglancer_uint64_sharded"
-                    ts_spec["metadata"] = relationship["sharding"]
+                    ts_spec = {"base": os.path.join(self.cloudpath, relationship["key"]),
+                               "driver": "neuroglancer_uint64_sharded",
+                               "metadata": by_id_info["sharding"]}
+                    tstype = "sharded"
                 else:
-                    ts_spec["driver"] = "neuroglancer_precomputed"
-                self.relationship_ts_dict[name] = ts.KvStore.open(ts_spec).result()
+                    ts_spec = os.path.join(self.cloudpath, relationship["key"]) + "/"
+                    tstype = "unsharded"
+
+                self.relationship_ts_dict[name] = (ts.KvStore.open(ts_spec).result(), 
+                                                    tstype)
+
+        if "spatial" in self.info.keys():
+            self.spatial_ts_dict = {}
+            for spatial in self.info["spatial"]:
+                if "sharding" in spatial.keys():
+                    ts_spec = {"base": os.path.join(self.cloudpath, spatial["key"]),
+                               "driver": "neuroglancer_uint64_sharded",
+                               "metadata": spatial["sharding"]}
+                    ts_type = "sharded"
+                else:
+                    ts_spec= os.path.join(self.cloudpath, spatial["key"]) + "/"
+                    ts_type = "unsharded"
+                self.spatial_ts_dict[spatial["key"]] = (ts.KvStore.open(ts_spec).result(), 
+                                                        ts_type)
 
     def get_all_annotation_ids(self):
         """Get all annotation IDs from the kv store.
@@ -200,7 +220,13 @@ class AnnotationReader:
         if self.ts_by_id is None:
             raise ValueError("No by_id information found in the info file.")
         all_ids = self.ts_by_id.list().result()
-        id_column = np.frombuffer(b"".join(all_ids), dtype=">u8")
+        if self.by_id_type == "sharded":
+            # convert id to binary representation of a uint64 
+            id_column = np.frombuffer(b"".join(all_ids), dtype=">u8")
+        elif self.by_id_type == "unsharded":
+            id_column = [int(id_.decode("utf-8")) for id_ in all_ids]
+        else:
+            raise ValueError(f"Unknown by_id type: {self.by_id_type}")
         return id_column
 
     def get_all_annotations(self, max_annotations=1_000_000):
@@ -221,15 +247,19 @@ class AnnotationReader:
             raise ValueError(
                 f"Number of annotations ({len(all_ids)}) exceeds the maximum allowed ({max_annotations})."
             )
-        id_column = np.frombuffer(b"".join(all_ids), dtype=">u8")
+        if self.by_id_type == "sharded":
+            id_column = np.frombuffer(b"".join(all_ids), dtype=">u8")
+        elif self.by_id_type == "unsharded":
+            id_column = all_ids   
         futures = [self.ts_by_id.read(id_) for id_ in all_ids]
         # await asyncio.wait(futures, return_when=asyncio.ALL_COMPLETED)
         all_ann_bytes = [b.result() for b in futures]
         anns = [self._decode_annotation(ann_bytes.value) for ann_bytes in all_ann_bytes]
         df = pd.DataFrame(anns)
-        df['ID']=id_column
+        df['ID'] = [int(id_) for id_ in all_ids]
         df.set_index('ID', inplace=True)
-        return df
+
+        return self.__post_process_dataframe(df)
 
     async def iter_all_ann(
         self,
@@ -353,13 +383,15 @@ class AnnotationReader:
             )
 
         # Get all annotations
-        rel_ts = self.relationship_ts_dict[relationship]
-        key = np.ascontiguousarray(related_id, dtype=">u8").tobytes()
+        rel_ts, tstype = self.relationship_ts_dict[relationship]
+        if tstype == "sharded":
+            key = np.ascontiguousarray(related_id, dtype=">u8").tobytes()
+        elif tstype == "unsharded":
+            key = str(related_id)
         annbytes = rel_ts[key]
         if annbytes is None:
             return pd.DataFrame()  # No annotations found for this relationship
-        # Decode the annotations
-        df = self.decode_multiple_annotations(annbytes)
+       
         # Process each annotation to decode its properties
         return self.decode_multiple_annotations(annbytes)
 
@@ -368,9 +400,13 @@ class AnnotationReader:
             raise ValueError("No by_id information found in the info file.")
         if self.ts_by_id is None:
             raise ValueError("No by_id information found in the info file.")
-
-        # convert id to binary representation of a uint64
-        key = np.ascontiguousarray(id, dtype=">u8").tobytes()
+        if self.by_id_type == "sharded":
+            # convert id to binary representation of a uint64
+            key = np.ascontiguousarray(id, dtype=">u8").tobytes()
+        elif self.by_id_type == "unsharded":
+            key = str(id)
+        else:
+            raise ValueError(f"Unknown by_id type: {self.by_id_type}")
         value = self.ts_by_id[key]
         return self._decode_annotation(value)
 
@@ -404,9 +440,73 @@ class AnnotationReader:
             ann_dict[relationship["id"]] = relations
             offset += 4 + n_rel * 8
         ann_dict = self._process_geometry(ann_dict)
-        ann_dict = self._process_enums(ann_dict)
+        #ann_dict = self._process_enums(ann_dict)
         return ann_dict
 
+    def read_annotations_in_chunk(
+        self,
+        spatial_key: str, 
+        chunk_index: Sequence[int]
+    ):
+        spatial_ts, ts_type = self.spatial_ts_dict.get(spatial_key)
+        if spatial_ts is None:
+            raise ValueError(f"Spatial key '{spatial_key}' not found in the info file.")
+
+        if len(chunk_index) != self.coordinate_space.rank:
+            raise ValueError(
+                f"Expected chunk_index to have length {self.coordinate_space.rank}, but received: {len(chunk_index)}"
+            )
+        spatial_md = next(md for md in self.info["spatial"] if md["key"] == spatial_key)
+        if ts_type == "sharded":
+            grid_shape = spatial_md.get("grid_shape", spatial_md.get("chunk_shape", None))
+            mortoncode = compressed_morton_code(chunk_index, np.array(grid_shape, dtype=np.int32))
+            chunk_key = np.ascontiguousarray(mortoncode, dtype=">u8").tobytes()
+        elif ts_type == "unsharded":
+            chunk_key = "_".join([str(c) for c in chunk_index])
+        else:
+            raise ValueError(f"Unknown spatial type: {ts_type}")
+        # Read the chunk from the spatial kv store
+        try:
+            annbytes = spatial_ts[chunk_key]
+        except KeyError:
+            # Handle the case where the chunk is not found
+            logging.warning(f"Chunk {chunk_index} not found in spatial store {spatial_key}. Returning empty DataFrame")
+            return pd.DataFrame(columns = [self.annotation_type, "ID"] + [p.name for p in self.properties]).set_index('ID')
+        if annbytes == '':
+            return pd.DataFrame(columns = [self.annotation_type, "ID"] + [p.name for p in self.properties]).set_index('ID')
+
+        # Decode the annotations in the chunk
+        return self.decode_multiple_annotations(annbytes) 
+
+    def get_annotations_in_bounds(
+        self,
+        lower_bound: Sequence[float],
+        upper_bound: Sequence[float],
+        max_annotations = 1_000_000
+    ):
+        """Get annotations within a bounding box.
+
+        Args:
+            lower_bound (Sequence[float]): The lower bound of the bounding box.
+            upper_bound (Sequence[float]): The upper bound of the bounding box.
+            max_annotations (int, optional): Maximum number of annotations to return.
+                Defaults to 1_000_000.
+        Returns:
+            pd.DataFrame: DataFrame of annotations within the bounding box.
+        """
+        if self.spatial_ts_dict is None:
+            raise ValueError("No spatial information found in the info file.")
+        lower_bound = lower_bound - np.array(self.info['lower_bound'])
+        upper_bound = lower_bound - np.array(self.info['lower_bound'])
+
+        total_annotations = 0
+        for key, ts in self.spatial_ts_dict.items():
+            spatial_md = next([d for d in self.info["spatial"] if d["key"] == key])
+            chunk_size = spatial_md.get("chunk_size", self.chunk_size)
+
+        # Implement logic to retrieve annotations within bounds
+        # This is left as an exercise for the reader.
+        return pd.DataFrame()
 
 class ShardSpec(NamedTuple):
     type: str
@@ -478,6 +578,31 @@ def choose_output_spec(
         minishard_index_encoding=minishard_index_encoding,
     )
 
+def morton_code_to_gridpt(code, grid_size):
+    gridpt = np.zeros([3,], dtype=int)
+
+    num_bits = [ math.ceil(math.log2(size)) for size in grid_size ]
+    j = np.uint64(0)
+    one = np.uint64(1)
+
+    if sum(num_bits) > 64:
+        raise ValueError(f"Unable to represent grids that require more than 64 bits. Grid size {grid_size} requires {num_bits} bits.")
+
+    max_coords = np.max(gridpt, axis=0)
+    if np.any(max_coords >= grid_size):
+        raise ValueError(f"Unable to represent grid points larger than the grid. Grid size: {grid_size} Grid points: {gridpt}")
+
+    code = np.uint64(code)
+
+    for i in range(max(num_bits)):
+        for dim in range(3):
+            i = np.uint64(i)
+            if 2 ** i < grid_size[dim]:
+                bit = np.uint64((code >> j) & one)
+                gridpt[dim] += (bit << i)
+                j += one
+
+    return gridpt
 
 def compressed_morton_code(gridpt, grid_size):
     """Converts a grid point to a compressed morton code.
@@ -517,7 +642,6 @@ def compressed_morton_code(gridpt, grid_size):
     if single_input:
         return code[0]
     return code
-
 
 def _get_dtype_for_geometry(annotation_type: AnnotationType, rank: int):
     geometry_size = rank if annotation_type == "point" else 2 * rank
@@ -614,7 +738,7 @@ class AnnotationWriter:
         self.lower_bound = np.full(
             shape=(self.rank,), fill_value=float("inf"), dtype=np.float32
         )
-        self.upper_bound = np.full(
+        self.upper_bound = nfp.full(
             shape=(self.rank,), fill_value=float("-inf"), dtype=np.float32
         )
         self.related_annotations = [{} for _ in self.relationships]
