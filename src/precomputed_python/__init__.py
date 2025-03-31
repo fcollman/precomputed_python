@@ -180,7 +180,6 @@ class AnnotationReader:
 
             self.ts_by_id = ts.KvStore.open(ts_spec).result()
 
-
         if "relationships" in self.info.keys():
             self.relationship_ts_dict = {}
             for relationship in self.info["relationships"]:
@@ -188,7 +187,7 @@ class AnnotationReader:
                 if "sharding" in relationship.keys():
                     ts_spec = {"base": os.path.join(self.cloudpath, relationship["key"]),
                                "driver": "neuroglancer_uint64_sharded",
-                               "metadata": by_id_info["sharding"]}
+                               "metadata": relationship["sharding"]}
                     tstype = "sharded"
                 else:
                     ts_spec = os.path.join(self.cloudpath, relationship["key"]) + "/"
@@ -238,7 +237,7 @@ class AnnotationReader:
             list[neuroglancer.viewer_state.AnnotationPropertySpec]: A list of AnnotationPropertySpec properties.
         """
         return self._properties
-        
+
     @property
     def coordinate_space(self):
         """Get the coordinate space of the annotations.
@@ -378,6 +377,19 @@ class AnnotationReader:
                 df[p.id]=df[p.id].replace(
                     {id: label for id, label in zip(p.enum_values,p.enum_labels)}
                 )
+        if 'geometry' in df.columns:
+            if self.annotation_type == "line":
+                df['point_a'] = df['geometry'].apply(lambda x: x[: self.coordinate_space.rank])
+                df['point_b'] = df['geometry'].apply(lambda x: x[self.coordinate_space.rank :])  
+            if self.annotation_type == "axis_aligned_bounding_box":
+                df['point_a'] = df['geometry'].apply(lambda x: x[: self.coordinate_space.rank])
+                df['point_b'] = df['geometry'].apply(lambda x: x[self.coordinate_space.rank :]) 
+            if self.annotation_type == "point":
+                df['point'] = df['geometry']
+            if self.annotation_type == "ellipsoid":
+                df['center'] = df['geometry'].apply(lambda x: x[: self.coordinate_space.rank])
+                df['radii'] = df['geometry'].apply(lambda x: x[self.coordinate_space.rank :])
+            df.drop(columns=['geometry'], inplace=True)
         return df
 
     def decode_multiple_annotations(self, annbytes):
@@ -480,6 +492,7 @@ class AnnotationReader:
         value = self.ts_by_id[key]
         return self._decode_annotation(value)
 
+    
     def _process_geometry(self, ann_dict):
         """ Process the geometry of the annotation. Will convert the geometry
         to the appropriate fields based on the annotation type.
