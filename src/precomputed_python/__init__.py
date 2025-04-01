@@ -423,7 +423,7 @@ class AnnotationReader:
 
         return self.__post_process_dataframe(df)
 
-    def get_by_relationship(self, relationship: str, related_id: int):
+    def get_by_relationship(self, relationship: str, related_id: int, get_relationships: bool = False):
         """ Get annotations by relationship. 
         Will not include any relationships this ID has.
         i.e. if the relationship is "parent" and the ID is 1234,
@@ -433,6 +433,8 @@ class AnnotationReader:
             relationship (str): The name of the relationship to filter by based on the info file.
             see self.info['relationships'] for the list of relationships.
             related_id (int): the ID of the relationship.
+            get_relationships (bool): If True, will include the relationships in the returned DataFrame.
+            This will be slower as it requires downloading each relationship. (Default False)
 
         Raises:
             ValueError: If relationships are not found in the info file.
@@ -458,12 +460,33 @@ class AnnotationReader:
             key = np.ascontiguousarray(related_id, dtype=">u8").tobytes()
         elif tstype == "unsharded":
             key = str(related_id)
-        annbytes = rel_ts[key]
-        if annbytes is None:
-            return pd.DataFrame()  # No annotations found for this relationship
-       
-        # Process each annotation to decode its properties
+        try:
+            annbytes = rel_ts[key]
+        except KeyError:
+            logging.warning(f"No annotations found for relationship '{relationship}' with ID {related_id}. Returning empty DataFrame.")
+            return self.__empty_df()
+        if get_relationships:
+            ids = self.__get_multiple_annotation_ids(annbytes)
+            return self.get_by_ids(ids)
         return self.decode_multiple_annotations(annbytes)
+
+    def __empty_df(self):
+        props = [p.name for p in self.properties]
+        return pd.DataFrame(columns=["ID"] + props + self.info["relationships"]).set_index('ID') 
+
+    def __get_multiple_annotation_ids(self, annbytes):
+        """Get the IDs encoded in a multiple annotation bytes encoding.
+
+        Args:
+            annbytes (bytes): The bytes to decode.
+
+        Returns:
+            pd.DataFrame: A DataFrame of decoded annotations.
+        """
+        n_annotations = struct.unpack("<Q", annbytes[:8])[0]
+        offset = 8+self.itemsize * n_annotations
+        ids = np.frombuffer(annbytes[offset : offset + 8 * n_annotations], dtype="<u8")
+        return ids
 
     def get_by_id(self, id):
         """Get an annotation by its ID. Will include any relationships this ID has.
@@ -492,7 +515,38 @@ class AnnotationReader:
         value = self.ts_by_id[key]
         return self._decode_annotation(value)
 
-    
+    def get_by_ids(self, ids: Sequence[int]):
+        """Get multiple annotations by their IDs.
+
+        Args:
+            ids (Sequence[int]): A sequence of IDs of the annotations to retrieve.
+
+        Returns:
+            pd.DataFrame: A DataFrame of the annotations with the specified IDs.
+        """
+        if "by_id" not in self.info.keys():
+            raise ValueError("No by_id information found in the info file.")
+        if self.ts_by_id is None:
+            raise ValueError("No by_id information found in the info file.")
+
+        futures = []
+        for id in ids:
+            if self.by_id_type == "sharded":
+                key = np.ascontiguousarray(id, dtype=">u8").tobytes()
+            elif self.by_id_type == "unsharded":
+                key = str(id)
+            else:
+                raise ValueError(f"Unknown by_id type: {self.by_id_type}")
+            futures.append(self.ts_by_id.read(key))
+
+        all_ann_bytes = [b.result() for b in futures]
+        anns = [self._decode_annotation(ann_bytes.value) for ann_bytes in all_ann_bytes]
+        df = pd.DataFrame(anns)
+        df['ID'] = ids
+        df.set_index('ID', inplace=True)
+
+        return self.__post_process_dataframe(df)
+
     def _process_geometry(self, ann_dict):
         """ Process the geometry of the annotation. Will convert the geometry
         to the appropriate fields based on the annotation type.
@@ -551,14 +605,15 @@ class AnnotationReader:
     def read_annotations_in_chunk(
         self,
         spatial_key: str, 
-        chunk_index: Sequence[int]
+        chunk_index: Sequence[int],
+        get_relationships: bool = False
     ):
         """Read annotations in a specific chunk from the spatial kv store.
 
         Args:
             spatial_key (str): The key of the spatial kv store.
             chunk_index (Sequence[int]): The index of the chunk to read within the grid of the spatial kv store.
-
+            get_relationships (bool): If True, will include the relationships in the returned DataFrame.
         Raises:
             ValueError: If the spatial key is not found in the info file.
             ValueError: If the length of chunk_index does not match the rank of the coordinate space.
@@ -590,10 +645,12 @@ class AnnotationReader:
         except KeyError:
             # Handle the case where the chunk is not found
             logging.warning(f"Chunk {chunk_index} not found in spatial store {spatial_key}. Returning empty DataFrame")
-            return pd.DataFrame(columns = [self.annotation_type, "ID"] + [p.name for p in self.properties]).set_index('ID')
+            return self.__empty_df()
         if annbytes == '':
-            return pd.DataFrame(columns = [self.annotation_type, "ID"] + [p.name for p in self.properties]).set_index('ID')
-
+            return self.__empty_df()
+        if get_relationships:
+            ids = self.__get_multiple_annotation_ids(annbytes)
+            return self.get_by_ids(ids)
         # Decode the annotations in the chunk
         return self.decode_multiple_annotations(annbytes) 
 
