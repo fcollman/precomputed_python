@@ -670,6 +670,11 @@ class AnnotationReader:
         Returns:
             pd.DataFrame: DataFrame of annotations within the bounding box.
         """
+        raise NotImplementedError(
+            "get_annotations_in_bounds is not yet implemented. "
+            "Please use read_annotations_in_chunk instead for now."
+        )
+        
         if self.spatial_ts_dict is None:
             raise ValueError("No spatial information found in the info file.")
         lower_bound = lower_bound - np.array(self.info['lower_bound'])
