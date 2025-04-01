@@ -797,8 +797,10 @@ class AnnotationWriter:
 
     def __init__(
         self,
-        coordinate_space: coordinate_space.CoordinateSpace,
         annotation_type: AnnotationType,
+        names: Sequence[str] = ['x', 'y', 'z'],
+        scales: Sequence[float] = (1.0, 1.0, 1.0),
+        units: [str, Sequence[str]] = "nm",
         relationships: Sequence[str] = (),
         properties: Sequence[viewer_state.AnnotationPropertySpec] = (),
         experimental_chunk_size: Union[float, Sequence[float]] = 256,
@@ -806,10 +808,19 @@ class AnnotationWriter:
         """Initializes an `AnnotationWriter`.
 
         Args:
-            coordinate_space: The coordinate space in which the annotations are
-                defined. is a `CoordinateSpace` object.
+
             annotation_type: The type of annotation.  Must be one of "point",
                 "line", "axis_aligned_bounding_box", or "ellipsoid".
+            names : The names of the dimensions of the coordinate space.
+                    Default is ["x", "y", "z"], should match whatever
+                    axes names you are trying to visualize in neuroglancer.
+            scales: The scales of the dimensions of the coordinate space.
+                Default is (1.0, 1.0, 1.0). Needs to match length of names
+            units: The units of the dimensions of the coordinate space.
+                Can be a list, or if all dimensions are a single unit, a single string.
+                Default is "nm". Must be a combo of a valid SI unit ["m", "s", "rad/s", "Hz"]
+                with a valid prefix ["Y", "Z", "E", "P", "T", "G", "M", "k", "h", "", "c", "m", "u", "µ", "n", "p", "f", "a", "z", "y"]
+                If a list it needs to match length of names.
             lower_bound: The lower bound of the bounding box of the annotations.
             relationships: The names of relationships between annotations.  Each
                 relationship is a string that is used as a key in the `relationships`
@@ -826,8 +837,23 @@ class AnnotationWriter:
                 will start at a single top level chunk and move down, at which time this parameter
                 will be removed in favor of parameters that control downsampling.
         """
+        if isinstance(units, str):
+            units = [units] * len(names)
 
-        self.coordinate_space = coordinate_space
+        if len(names) != len(scales):
+            raise ValueError(
+                f"Expected names and scales to have the same length, but received: {len(names)} and {len(scales)}"
+            )
+        if len(names) != len(units):
+            raise ValueError(
+                f"Expected names and units to have the same length, but received: {len(names)} and {len(units)}"
+            )
+
+        self.coordinate_space = CoordinateSpace(
+            names=names,
+            scales=scales,
+            units=units,
+        )
         self.relationships = list(relationships)
         self.annotation_type = annotation_type
         self.properties = list(properties)
