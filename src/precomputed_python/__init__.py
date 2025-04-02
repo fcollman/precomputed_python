@@ -134,6 +134,13 @@ SHARD_TARGET_SIZE = 50000000
 
 class AnnotationReader:
     def __init__(self, cloudpath: str):
+        """ Class for reading precomputed annotations from a cloud path.
+
+        Args:
+            cloudpath (str): The cloud path to the precomputed annotations. This should be a
+                valid tensorstore path, e.g. "gs://bucket/path/to/annotations/".
+                use file:// for accessing local files.
+        """
         self.cloudpath = cloudpath
 
         ts_spec = {
@@ -471,8 +478,10 @@ class AnnotationReader:
         return self.decode_multiple_annotations(annbytes)
 
     def __empty_df(self):
-        props = [p.name for p in self.properties]
-        return pd.DataFrame(columns=["ID"] + props + self.info["relationships"]).set_index('ID') 
+        props = [p.id for p in self.properties]
+        relations = [r['id'] for r in self.info['relationships']]
+        df= pd.DataFrame(columns=["ID"] + props + relations)
+        return df.set_index('ID')
 
     def __get_multiple_annotation_ids(self, annbytes):
         """Get the IDs encoded in a multiple annotation bytes encoding.
@@ -602,18 +611,102 @@ class AnnotationReader:
         ann_dict = self._process_geometry(ann_dict)
         return ann_dict
 
+    def __get_overlapping_chunks(
+        self,
+        spatial_key: str,
+        lower_bound: Sequence[float],
+        upper_bound: Sequence[float]
+    ):
+        """ Get the overlapping chunks in a spatial kv store for a given bounding box.
+
+        Args:
+            spatial_key (str): The key of the spatial kv store to query.
+            lower_bound (Sequence[float]): The lower bound of the bounding box.
+            upper_bound (Sequence[float]): The upper bound of the bounding box.
+
+        Raises:
+            ValueError: If the spatial key is not found in the info file.
+            ValueError: If the length of lower_bound or upper_bound does not match the rank of the coordinate space.
+
+        Returns:
+            list[np.array]: a list of tuples, where each tuple represents the indices of a chunk
+        """
+        if len(lower_bound)!= self.coordinate_space.rank:
+            raise ValueError(
+                f"Lower bound length {len(lower_bound)} does not match coordinate space rank {self.coordinate_space.rank}."
+            )
+        if len(upper_bound) != self.coordinate_space.rank:
+            raise ValueError(
+                f"Upper bound length {len(upper_bound)} does not match coordinate space rank {self.coordinate_space.rank}."
+            )
+        global_lower = np.array(self.info['lower_bound'])
+        global_upper = np.array(self.info['upper_bound'])
+
+        local_lower = np.array(lower_bound - global_lower)
+        local_upper = np.array(upper_bound - global_lower)
+
+        try: 
+            spatial_md = next(md for md in self.info["spatial"] if md['key']==spatial_key)
+        except StopIteration:
+            raise ValueError(f"Spatial key '{spatial_key}' not found in the info file.")
+        
+        lower_index = np.floor(local_lower / spatial_md['chunk_size']).astype(int)
+        upper_index = np.floor(local_upper / spatial_md['chunk_size']).astype(int)
+
+        grid_shape = spatial_md.get("grid_shape", spatial_md.get("chunk_shape", None))
+
+        # Ensure lower_index is not greater than upper_index
+        lower_index = np.clip(lower_index, 0, np.array(grid_shape) - 1)
+        upper_index = np.clip(upper_index, 0, np.array(grid_shape) - 1)
+
+        # Generate all chunk indices in the bounding box
+        overlapping_chunks = []
+
+        chunks = product(
+            *(range(lower_index[i], upper_index[i] + 1) 
+              for i in range(self.coordinate_space.rank))
+        )
+        return chunks
+
     def read_annotations_in_chunk(
         self,
         spatial_key: str, 
         chunk_index: Sequence[int],
-        get_relationships: bool = False
+        get_relationships: bool = False,
+        suppress_warning: bool = False
     ):
         """Read annotations in a specific chunk from the spatial kv store.
+           The spatial index metadata can be found at self.info["spatial"]
+           which contains a list of downsampling spatial indices.
+           Each index has a "key" specified by self.info['spatial']
+
+           Each index contains a grid of chunks that divides the space from
+           self.info['lower_bound'] to self.info['upper_bound'] into smaller regions.
+           The first index should have the fewest chunks, 
+           and the last index should have the largest number of chunks. 
+
+           Each chunk should only contain self.info["spatial"][i]['max']
+           annotations. 
+
+           Each chunk is self.info["spatial"][i]['chunk_size'] large.
+           
+           So to find the chunk_index of a specific point in the spatial kv store,
+           you have to calculate the grid index based on the chunk_size and the lower_bound.
+           For example, if the lower bound is [1, 10, 50] and the chunk size is [100, 100, 100],
+           and you want to find the chunk index for the point [150, 250, 50],
+           you would calculate the chunk index as follows:
+              chunk_index = [
+                    int((150 - 1) // 100),  # x index
+                    int((250 - 10) // 100),  # y index
+                    int((50 - 50) // 100)    # z index
+                ] = [1, 2, 0]
 
         Args:
             spatial_key (str): The key of the spatial kv store.
             chunk_index (Sequence[int]): The index of the chunk to read within the grid of the spatial kv store.
             get_relationships (bool): If True, will include the relationships in the returned DataFrame.
+            suppress_warning (bool): If True, will suppress warnings about missing chunks.
+            Defaults to False.
         Raises:
             ValueError: If the spatial key is not found in the info file.
             ValueError: If the length of chunk_index does not match the rank of the coordinate space.
@@ -644,7 +737,8 @@ class AnnotationReader:
             annbytes = spatial_ts[chunk_key]
         except KeyError:
             # Handle the case where the chunk is not found
-            logging.warning(f"Chunk {chunk_index} not found in spatial store {spatial_key}. Returning empty DataFrame")
+            if not suppress_warning:
+                logging.warning(f"Chunk {chunk_index} not found in spatial store {spatial_key}. Returning empty DataFrame")
             return self.__empty_df()
         if annbytes == '':
             return self.__empty_df()
@@ -653,6 +747,34 @@ class AnnotationReader:
             return self.get_by_ids(ids)
         # Decode the annotations in the chunk
         return self.decode_multiple_annotations(annbytes) 
+
+    def query_spatial_index_in_bounds(
+        self,
+        spatial_key: str,
+        lower_bound: Sequence[float],
+        upper_bound: Sequence[float]
+    ):
+        """Query the spatial index to get overlapping chunks in a bounding box.
+
+        Args:
+            spatial_key (str): The key of the spatial kv store to query.
+            lower_bound (Sequence[float]): The lower bound of the bounding box.
+            upper_bound (Sequence[float]): The upper bound of the bounding box.
+
+        Returns:
+            list[tuple]: A list of tuples, where each tuple represents the indices of a chunk
+        """
+        overlapping_chunks = self.__get_overlapping_chunks(
+            spatial_key, lower_bound, upper_bound
+        )
+        dfs = []
+        for chunk_index in overlapping_chunks:
+            df = self.read_annotations_in_chunk(spatial_key, chunk_index, suppress_warning=True)
+            if not df.empty:
+                dfs.append(df)
+        if len(dfs)==0:
+            return self.__empty_df()
+        return pd.concat(dfs)
 
     def get_annotations_in_bounds(
         self,
@@ -670,24 +792,33 @@ class AnnotationReader:
         Returns:
             pd.DataFrame: DataFrame of annotations within the bounding box.
         """
-        raise NotImplementedError(
-            "get_annotations_in_bounds is not yet implemented. "
-            "Please use read_annotations_in_chunk instead for now."
-        )
+        
+        if len(lower_bound) != self.coordinate_space.rank:
+            raise ValueError(
+                f"Lower bound length {len(lower_bound)} does not match coordinate space rank {self.coordinate_space.rank}."
+            )
+        if len(upper_bound) != self.coordinate_space.rank:
+            raise ValueError(
+                f"Upper bound length {len(upper_bound)} does not match coordinate space rank {self.coordinate_space.rank}."
+            )
         
         if self.spatial_ts_dict is None:
             raise ValueError("No spatial information found in the info file.")
-        lower_bound = lower_bound - np.array(self.info['lower_bound'])
-        upper_bound = lower_bound - np.array(self.info['lower_bound'])
-
+        
         total_annotations = 0
-        for key, ts in self.spatial_ts_dict.items():
-            spatial_md = next([d for d in self.info["spatial"] if d["key"] == key])
-            chunk_size = spatial_md.get("chunk_size", self.chunk_size)
+        dfs =[]
+        for spatial_key in self.spatial_ts_dict.keys():
+            df = self.query_spatial_index_in_bounds(spatial_key, lower_bound, upper_bound)
+            total_annotations += len(df)
+            dfs.append(df)
+            if total_annotations > max_annotations:
+                logging.warning(f"Exceeded maximum annotations limit: {max_annotations}. Returning partial results.")
+                break
+        df = pd.concat(dfs) if dfs else self._empty_df()
+        if total_annotations> max_annotations:
+            df = df.head(max_annotations)
 
-        # Implement logic to retrieve annotations within bounds
-        # This is left as an exercise for the reader.
-        return pd.DataFrame()
+        return df
 
 class ShardSpec(NamedTuple):
     type: str
