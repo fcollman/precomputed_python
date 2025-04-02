@@ -792,7 +792,8 @@ class AnnotationReader:
         Returns:
             pd.DataFrame: DataFrame of annotations within the bounding box.
         """
-        
+        logging.warning("this function does not yet post-hoc filter annotations to only include the ones in the bounding box")
+        logging.warning("query is over-complete for annotations within the bounding box")
         if len(lower_bound) != self.coordinate_space.rank:
             raise ValueError(
                 f"Lower bound length {len(lower_bound)} does not match coordinate space rank {self.coordinate_space.rank}."
