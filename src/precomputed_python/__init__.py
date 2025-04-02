@@ -163,6 +163,12 @@ class AnnotationReader:
                 viewer_state.AnnotationPropertySpec(json_data=p)
                 for p in self.info["properties"]
             ]
+            self._enum_dict = {}
+            for p in self._properties:
+                if p.enum_labels:
+                    self._enum_dict[p.id] = {
+                        k: v for k, v in zip(p.enum_values, p.enum_labels)
+                    }
         else:
             self._properties = []
 
@@ -550,7 +556,11 @@ class AnnotationReader:
         else:
             raise ValueError(f"Unknown by_id type: {self.by_id_type}")
         value = self.ts_by_id[key]
-        return self._decode_annotation(value)
+        ann = self._decode_annotation(value)
+        for p in self.properties:
+            if p.enum_labels:
+                ann[p.id] = self._enum_dict[p.id][ann[p.id]]
+        return ann
 
     def get_by_ids(self, ids: Sequence[int]):
         """Get multiple annotations by their IDs.
@@ -637,6 +647,7 @@ class AnnotationReader:
             ann_dict[relationship["id"]] = relations
             offset += 4 + n_rel * 8
         ann_dict = self._process_geometry(ann_dict)
+
         return ann_dict
 
     def __get_overlapping_chunks(
