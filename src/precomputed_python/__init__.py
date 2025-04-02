@@ -134,7 +134,7 @@ SHARD_TARGET_SIZE = 50000000
 
 class AnnotationReader:
     def __init__(self, cloudpath: str):
-        """ Class for reading precomputed annotations from a cloud path.
+        """Class for reading precomputed annotations from a cloud path.
 
         Args:
             cloudpath (str): The cloud path to the precomputed annotations. This should be a
@@ -176,9 +176,10 @@ class AnnotationReader:
         if "by_id" in self.info.keys():
             by_id_info = self.info["by_id"]
             if "sharding" in by_id_info.keys():
-                ts_spec = {"base": os.path.join(self.cloudpath, by_id_info["key"]),
-                           "driver": "neuroglancer_uint64_sharded",
-                           "metadata": by_id_info["sharding"]
+                ts_spec = {
+                    "base": os.path.join(self.cloudpath, by_id_info["key"]),
+                    "driver": "neuroglancer_uint64_sharded",
+                    "metadata": by_id_info["sharding"],
                 }
                 self.by_id_type = "sharded"
             else:
@@ -192,30 +193,38 @@ class AnnotationReader:
             for relationship in self.info["relationships"]:
                 name = relationship["id"]
                 if "sharding" in relationship.keys():
-                    ts_spec = {"base": os.path.join(self.cloudpath, relationship["key"]),
-                               "driver": "neuroglancer_uint64_sharded",
-                               "metadata": relationship["sharding"]}
+                    ts_spec = {
+                        "base": os.path.join(self.cloudpath, relationship["key"]),
+                        "driver": "neuroglancer_uint64_sharded",
+                        "metadata": relationship["sharding"],
+                    }
                     tstype = "sharded"
                 else:
                     ts_spec = os.path.join(self.cloudpath, relationship["key"]) + "/"
                     tstype = "unsharded"
 
-                self.relationship_ts_dict[name] = (ts.KvStore.open(ts_spec).result(), 
-                                                    tstype)
+                self.relationship_ts_dict[name] = (
+                    ts.KvStore.open(ts_spec).result(),
+                    tstype,
+                )
 
         if "spatial" in self.info.keys():
             self.spatial_ts_dict = {}
             for spatial in self.info["spatial"]:
                 if "sharding" in spatial.keys():
-                    ts_spec = {"base": os.path.join(self.cloudpath, spatial["key"]),
-                               "driver": "neuroglancer_uint64_sharded",
-                               "metadata": spatial["sharding"]}
+                    ts_spec = {
+                        "base": os.path.join(self.cloudpath, spatial["key"]),
+                        "driver": "neuroglancer_uint64_sharded",
+                        "metadata": spatial["sharding"],
+                    }
                     ts_type = "sharded"
                 else:
-                    ts_spec= os.path.join(self.cloudpath, spatial["key"]) + "/"
+                    ts_spec = os.path.join(self.cloudpath, spatial["key"]) + "/"
                     ts_type = "unsharded"
-                self.spatial_ts_dict[spatial["key"]] = (ts.KvStore.open(ts_spec).result(), 
-                                                        ts_type)
+                self.spatial_ts_dict[spatial["key"]] = (
+                    ts.KvStore.open(ts_spec).result(),
+                    ts_type,
+                )
 
     def get_relationships(self):
         """Get the relationships of the annotations.
@@ -224,7 +233,7 @@ class AnnotationReader:
         """
         if "relationships" not in self.info.keys():
             raise ValueError("No relationships found in the info file.")
-        return [r['key'] for r in self.info["relationships"]]
+        return [r["key"] for r in self.info["relationships"]]
 
     def get_property_names(self):
         """Get the properties of the annotations.
@@ -264,7 +273,7 @@ class AnnotationReader:
             raise ValueError("No by_id information found in the info file.")
         all_ids = self.ts_by_id.list().result()
         if self.by_id_type == "sharded":
-            # convert id to binary representation of a uint64 
+            # convert id to binary representation of a uint64
             id_column = np.frombuffer(b"".join(all_ids), dtype=">u8")
         elif self.by_id_type == "unsharded":
             id_column = [int(id_.decode("utf-8")) for id_ in all_ids]
@@ -293,14 +302,14 @@ class AnnotationReader:
         if self.by_id_type == "sharded":
             id_column = np.frombuffer(b"".join(all_ids), dtype=">u8")
         elif self.by_id_type == "unsharded":
-            id_column = all_ids   
+            id_column = all_ids
         futures = [self.ts_by_id.read(id_) for id_ in all_ids]
         # await asyncio.wait(futures, return_when=asyncio.ALL_COMPLETED)
         all_ann_bytes = [b.result() for b in futures]
         anns = [self._decode_annotation(ann_bytes.value) for ann_bytes in all_ann_bytes]
         df = pd.DataFrame(anns)
-        df['ID'] = [int(id_) for id_ in id_column]
-        df.set_index('ID', inplace=True)
+        df["ID"] = [int(id_) for id_ in id_column]
+        df.set_index("ID", inplace=True)
 
         return self.__post_process_dataframe(df)
 
@@ -375,28 +384,39 @@ class AnnotationReader:
     def info(self):
         return self._info
 
-
     def __post_process_dataframe(self, df):
         """Post-process the DataFrame to handle enum properties."""
-        
+
         for p in self.properties:
             if p.enum_labels:
-                df[p.id]=df[p.id].replace(
-                    {id: label for id, label in zip(p.enum_values,p.enum_labels)}
+                df[p.id] = df[p.id].replace(
+                    {id: label for id, label in zip(p.enum_values, p.enum_labels)}
                 )
-        if 'geometry' in df.columns:
+        if "geometry" in df.columns:
             if self.annotation_type == "line":
-                df['point_a'] = df['geometry'].apply(lambda x: x[: self.coordinate_space.rank])
-                df['point_b'] = df['geometry'].apply(lambda x: x[self.coordinate_space.rank :])  
+                df["point_a"] = df["geometry"].apply(
+                    lambda x: x[: self.coordinate_space.rank]
+                )
+                df["point_b"] = df["geometry"].apply(
+                    lambda x: x[self.coordinate_space.rank :]
+                )
             if self.annotation_type == "axis_aligned_bounding_box":
-                df['point_a'] = df['geometry'].apply(lambda x: x[: self.coordinate_space.rank])
-                df['point_b'] = df['geometry'].apply(lambda x: x[self.coordinate_space.rank :]) 
+                df["point_a"] = df["geometry"].apply(
+                    lambda x: x[: self.coordinate_space.rank]
+                )
+                df["point_b"] = df["geometry"].apply(
+                    lambda x: x[self.coordinate_space.rank :]
+                )
             if self.annotation_type == "point":
-                df['point'] = df['geometry']
+                df["point"] = df["geometry"]
             if self.annotation_type == "ellipsoid":
-                df['center'] = df['geometry'].apply(lambda x: x[: self.coordinate_space.rank])
-                df['radii'] = df['geometry'].apply(lambda x: x[self.coordinate_space.rank :])
-            df.drop(columns=['geometry'], inplace=True)
+                df["center"] = df["geometry"].apply(
+                    lambda x: x[: self.coordinate_space.rank]
+                )
+                df["radii"] = df["geometry"].apply(
+                    lambda x: x[self.coordinate_space.rank :]
+                )
+            df.drop(columns=["geometry"], inplace=True)
         return df
 
     def decode_multiple_annotations(self, annbytes):
@@ -421,17 +441,23 @@ class AnnotationReader:
 
         records = []
         for row in annarray:
-            record = {name: row[name].tolist() if isinstance(row[name], np.ndarray) else row[name]
-                    for name in annarray.dtype.names}
+            record = {
+                name: row[name].tolist()
+                if isinstance(row[name], np.ndarray)
+                else row[name]
+                for name in annarray.dtype.names
+            }
             records.append(record)
 
         # Create DataFrame
-        df = pd.DataFrame(records, index=pd.Series(ids, name='ID'))
+        df = pd.DataFrame(records, index=pd.Series(ids, name="ID"))
 
         return self.__post_process_dataframe(df)
 
-    def get_by_relationship(self, relationship: str, related_id: int, get_relationships: bool = False):
-        """ Get annotations by relationship. 
+    def get_by_relationship(
+        self, relationship: str, related_id: int, get_relationships: bool = False
+    ):
+        """Get annotations by relationship.
         Will not include any relationships this ID has.
         i.e. if the relationship is "parent" and the ID is 1234,
         this will return all annotations that have parent=1234 as a relationship property.
@@ -470,7 +496,9 @@ class AnnotationReader:
         try:
             annbytes = rel_ts[key]
         except KeyError:
-            logging.warning(f"No annotations found for relationship '{relationship}' with ID {related_id}. Returning empty DataFrame.")
+            logging.warning(
+                f"No annotations found for relationship '{relationship}' with ID {related_id}. Returning empty DataFrame."
+            )
             return self.__empty_df()
         if get_relationships:
             ids = self.__get_multiple_annotation_ids(annbytes)
@@ -479,9 +507,9 @@ class AnnotationReader:
 
     def __empty_df(self):
         props = [p.id for p in self.properties]
-        relations = [r['id'] for r in self.info['relationships']]
-        df= pd.DataFrame(columns=["ID"] + props + relations)
-        return df.set_index('ID')
+        relations = [r["id"] for r in self.info["relationships"]]
+        df = pd.DataFrame(columns=["ID"] + props + relations)
+        return df.set_index("ID")
 
     def __get_multiple_annotation_ids(self, annbytes):
         """Get the IDs encoded in a multiple annotation bytes encoding.
@@ -493,7 +521,7 @@ class AnnotationReader:
             pd.DataFrame: A DataFrame of decoded annotations.
         """
         n_annotations = struct.unpack("<Q", annbytes[:8])[0]
-        offset = 8+self.itemsize * n_annotations
+        offset = 8 + self.itemsize * n_annotations
         ids = np.frombuffer(annbytes[offset : offset + 8 * n_annotations], dtype="<u8")
         return ids
 
@@ -551,20 +579,20 @@ class AnnotationReader:
         all_ann_bytes = [b.result() for b in futures]
         anns = [self._decode_annotation(ann_bytes.value) for ann_bytes in all_ann_bytes]
         df = pd.DataFrame(anns)
-        df['ID'] = ids
-        df.set_index('ID', inplace=True)
+        df["ID"] = ids
+        df.set_index("ID", inplace=True)
 
         return self.__post_process_dataframe(df)
 
     def _process_geometry(self, ann_dict):
-        """ Process the geometry of the annotation. Will convert the geometry
+        """Process the geometry of the annotation. Will convert the geometry
         to the appropriate fields based on the annotation type.
         This is used to convert the geometry field in the annotation
-        to the appropriate fields for the annotation type.  
+        to the appropriate fields for the annotation type.
         For example, for a point annotation, the geometry field will be
         converted to a point column, but for a line it will be converted
         to point_a and point_b.
-        
+
         Args:
             ann_dict (dict): The annotation dictionary containing the geometry.
 
@@ -615,9 +643,9 @@ class AnnotationReader:
         self,
         spatial_key: str,
         lower_bound: Sequence[float],
-        upper_bound: Sequence[float]
+        upper_bound: Sequence[float],
     ):
-        """ Get the overlapping chunks in a spatial kv store for a given bounding box.
+        """Get the overlapping chunks in a spatial kv store for a given bounding box.
 
         Args:
             spatial_key (str): The key of the spatial kv store to query.
@@ -631,7 +659,7 @@ class AnnotationReader:
         Returns:
             list[np.array]: a list of tuples, where each tuple represents the indices of a chunk
         """
-        if len(lower_bound)!= self.coordinate_space.rank:
+        if len(lower_bound) != self.coordinate_space.rank:
             raise ValueError(
                 f"Lower bound length {len(lower_bound)} does not match coordinate space rank {self.coordinate_space.rank}."
             )
@@ -639,19 +667,21 @@ class AnnotationReader:
             raise ValueError(
                 f"Upper bound length {len(upper_bound)} does not match coordinate space rank {self.coordinate_space.rank}."
             )
-        global_lower = np.array(self.info['lower_bound'])
-        global_upper = np.array(self.info['upper_bound'])
+        global_lower = np.array(self.info["lower_bound"])
+        global_upper = np.array(self.info["upper_bound"])
 
         local_lower = np.array(lower_bound - global_lower)
         local_upper = np.array(upper_bound - global_lower)
 
-        try: 
-            spatial_md = next(md for md in self.info["spatial"] if md['key']==spatial_key)
+        try:
+            spatial_md = next(
+                md for md in self.info["spatial"] if md["key"] == spatial_key
+            )
         except StopIteration:
             raise ValueError(f"Spatial key '{spatial_key}' not found in the info file.")
-        
-        lower_index = np.floor(local_lower / spatial_md['chunk_size']).astype(int)
-        upper_index = np.floor(local_upper / spatial_md['chunk_size']).astype(int)
+
+        lower_index = np.floor(local_lower / spatial_md["chunk_size"]).astype(int)
+        upper_index = np.floor(local_upper / spatial_md["chunk_size"]).astype(int)
 
         grid_shape = spatial_md.get("grid_shape", spatial_md.get("chunk_shape", None))
 
@@ -663,17 +693,19 @@ class AnnotationReader:
         overlapping_chunks = []
 
         chunks = product(
-            *(range(lower_index[i], upper_index[i] + 1) 
-              for i in range(self.coordinate_space.rank))
+            *(
+                range(lower_index[i], upper_index[i] + 1)
+                for i in range(self.coordinate_space.rank)
+            )
         )
         return chunks
 
     def read_annotations_in_chunk(
         self,
-        spatial_key: str, 
+        spatial_key: str,
         chunk_index: Sequence[int],
         get_relationships: bool = False,
-        suppress_warning: bool = False
+        suppress_warning: bool = False,
     ):
         """Read annotations in a specific chunk from the spatial kv store.
            The spatial index metadata can be found at self.info["spatial"]
@@ -682,14 +714,14 @@ class AnnotationReader:
 
            Each index contains a grid of chunks that divides the space from
            self.info['lower_bound'] to self.info['upper_bound'] into smaller regions.
-           The first index should have the fewest chunks, 
-           and the last index should have the largest number of chunks. 
+           The first index should have the fewest chunks,
+           and the last index should have the largest number of chunks.
 
            Each chunk should only contain self.info["spatial"][i]['max']
-           annotations. 
+           annotations.
 
            Each chunk is self.info["spatial"][i]['chunk_size'] large.
-           
+
            So to find the chunk_index of a specific point in the spatial kv store,
            you have to calculate the grid index based on the chunk_size and the lower_bound.
            For example, if the lower bound is [1, 10, 50] and the chunk size is [100, 100, 100],
@@ -725,8 +757,12 @@ class AnnotationReader:
             )
         spatial_md = next(md for md in self.info["spatial"] if md["key"] == spatial_key)
         if ts_type == "sharded":
-            grid_shape = spatial_md.get("grid_shape", spatial_md.get("chunk_shape", None))
-            mortoncode = compressed_morton_code(chunk_index, np.array(grid_shape, dtype=np.int32))
+            grid_shape = spatial_md.get(
+                "grid_shape", spatial_md.get("chunk_shape", None)
+            )
+            mortoncode = compressed_morton_code(
+                chunk_index, np.array(grid_shape, dtype=np.int32)
+            )
             chunk_key = np.ascontiguousarray(mortoncode, dtype=">u8").tobytes()
         elif ts_type == "unsharded":
             chunk_key = "_".join([str(c) for c in chunk_index])
@@ -738,21 +774,23 @@ class AnnotationReader:
         except KeyError:
             # Handle the case where the chunk is not found
             if not suppress_warning:
-                logging.warning(f"Chunk {chunk_index} not found in spatial store {spatial_key}. Returning empty DataFrame")
+                logging.warning(
+                    f"Chunk {chunk_index} not found in spatial store {spatial_key}. Returning empty DataFrame"
+                )
             return self.__empty_df()
-        if annbytes == '':
+        if annbytes == "":
             return self.__empty_df()
         if get_relationships:
             ids = self.__get_multiple_annotation_ids(annbytes)
             return self.get_by_ids(ids)
         # Decode the annotations in the chunk
-        return self.decode_multiple_annotations(annbytes) 
+        return self.decode_multiple_annotations(annbytes)
 
     def query_spatial_index_in_bounds(
         self,
         spatial_key: str,
         lower_bound: Sequence[float],
-        upper_bound: Sequence[float]
+        upper_bound: Sequence[float],
     ):
         """Query the spatial index to get overlapping chunks in a bounding box.
 
@@ -769,18 +807,123 @@ class AnnotationReader:
         )
         dfs = []
         for chunk_index in overlapping_chunks:
-            df = self.read_annotations_in_chunk(spatial_key, chunk_index, suppress_warning=True)
+            df = self.read_annotations_in_chunk(
+                spatial_key, chunk_index, suppress_warning=True
+            )
             if not df.empty:
                 dfs.append(df)
-        if len(dfs)==0:
+        if len(dfs) == 0:
             return self.__empty_df()
         return pd.concat(dfs)
+
+    def __post_hoc_spatial_filter(
+        self,
+        df: pd.DataFrame,
+        lower_bound: Sequence[float],
+        upper_bound: Sequence[float],
+    ):
+        """filter the annotations to only include the ones in the bounding box.
+
+        Args:
+            df (pd.DataFrame): The DataFrame of annotations to filter.
+            lower_bound (Sequence[float]): The lower bound of the bounding box.
+            upper_bound (Sequence[float]): The upper bound of the bounding box.
+
+        Raises:
+            ValueError: If the length of lower_bound or upper_bound does not match the rank of the coordinate space.
+            ValueError: If the bounding box is invalid.
+
+        Returns:
+            pd.Dataframe: A DataFrame of annotations within the bounding box.
+        """
+
+        # Check if the DataFrame is empty
+        if df.empty:
+            return df
+
+        # Check if the lower and upper bounds are valid
+        if len(lower_bound) != self.coordinate_space.rank:
+            raise ValueError(
+                f"Lower bound length {len(lower_bound)} does not match coordinate space rank {self.coordinate_space.rank}."
+            )
+        if len(upper_bound) != self.coordinate_space.rank:
+            raise ValueError(
+                f"Upper bound length {len(upper_bound)} does not match coordinate space rank {self.coordinate_space.rank}."
+            )
+        # Create a bounding box for the lower and upper bounds
+        lower_bound = np.array(lower_bound)
+        upper_bound = np.array(upper_bound)
+        bounding_box = np.array([lower_bound, upper_bound])
+        # Check if the bounding box is valid
+        if np.any(bounding_box[0] > bounding_box[1]):
+            raise ValueError(
+                "Invalid bounding box: lower bound is greater than upper bound."
+            )
+        # Filter the DataFrame to only include annotations within the bounding box
+
+        # based on what kind of annotation it is
+        # call a different filtering function to figure out
+        # if each row of the dataframe is inside the bounding box
+
+        if self.annotation_type == "point":
+            points = np.vstack(
+                df["point"]
+            )  # Convert the "point" column to a 2D NumPy array
+            mask = np.all(points >= lower_bound, axis=1) & np.all(
+                points <= upper_bound, axis=1
+            )
+            df = df[mask]
+        if self.annotation_type == "line":
+            # Combine point_a and point_b into a single 2D array for vectorized comparison
+            points_a = np.vstack(df["point_a"])
+            points_b = np.vstack(df["point_b"])
+            mask = (
+                np.all(points_a >= lower_bound, axis=1)
+                & np.all(points_a <= upper_bound, axis=1)
+            ) | (
+                np.all(points_b >= lower_bound, axis=1)
+                & np.all(points_b <= upper_bound, axis=1)
+            )
+            df = df[mask]
+
+        if self.annotation_type == "axis_aligned_bounding_box":
+            # Combine point_a and point_b into a single 2D array for vectorized comparison
+            points_a = np.vstack(df["point_a"])
+            points_b = np.vstack(df["point_b"])
+            mask = (
+                (
+                    np.all(points_a >= lower_bound, axis=1)
+                    & np.all(points_a <= upper_bound, axis=1)
+                )
+                | (
+                    np.all(points_b >= lower_bound, axis=1)
+                    & np.all(points_b <= upper_bound, axis=1)
+                )
+                | (
+                    np.all(points_a <= lower_bound, axis=1)
+                    & np.all(points_b >= upper_bound, axis=1)
+                )
+                | (
+                    np.all(points_b <= lower_bound, axis=1)
+                    & np.all(points_a >= upper_bound, axis=1)
+                )
+            )
+            df = df[mask]
+
+        if self.annotation_type == "ellipsoid":
+            # Combine center into a single 2D array for vectorized comparison
+            centers = np.vstack(df["center"])
+            mask = np.all(centers >= lower_bound, axis=1) & np.all(
+                centers <= upper_bound, axis=1
+            )
+            df = df[mask]
+        return df
 
     def get_annotations_in_bounds(
         self,
         lower_bound: Sequence[float],
         upper_bound: Sequence[float],
-        max_annotations = 1_000_000
+        max_annotations=1_000_000,
     ):
         """Get annotations within a bounding box.
 
@@ -792,8 +935,6 @@ class AnnotationReader:
         Returns:
             pd.DataFrame: DataFrame of annotations within the bounding box.
         """
-        logging.warning("this function does not yet post-hoc filter annotations to only include the ones in the bounding box")
-        logging.warning("query is over-complete for annotations within the bounding box")
         if len(lower_bound) != self.coordinate_space.rank:
             raise ValueError(
                 f"Lower bound length {len(lower_bound)} does not match coordinate space rank {self.coordinate_space.rank}."
@@ -802,24 +943,29 @@ class AnnotationReader:
             raise ValueError(
                 f"Upper bound length {len(upper_bound)} does not match coordinate space rank {self.coordinate_space.rank}."
             )
-        
+
         if self.spatial_ts_dict is None:
             raise ValueError("No spatial information found in the info file.")
-        
+
         total_annotations = 0
-        dfs =[]
+        dfs = []
         for spatial_key in self.spatial_ts_dict.keys():
-            df = self.query_spatial_index_in_bounds(spatial_key, lower_bound, upper_bound)
+            df = self.query_spatial_index_in_bounds(
+                spatial_key, lower_bound, upper_bound
+            )
             total_annotations += len(df)
             dfs.append(df)
             if total_annotations > max_annotations:
-                logging.warning(f"Exceeded maximum annotations limit: {max_annotations}. Returning partial results.")
+                logging.warning(
+                    f"Exceeded maximum annotations limit: {max_annotations}. Returning partial results."
+                )
                 break
-        df = pd.concat(dfs) if dfs else self._empty_df()
-        if total_annotations> max_annotations:
+        df = pd.concat(dfs) if dfs else self.__empty_df()
+        if total_annotations > max_annotations:
             df = df.head(max_annotations)
 
-        return df
+        return self.__post_hoc_spatial_filter(df, lower_bound, upper_bound)
+
 
 class ShardSpec(NamedTuple):
     type: str
@@ -891,31 +1037,42 @@ def choose_output_spec(
         minishard_index_encoding=minishard_index_encoding,
     )
 
-def morton_code_to_gridpt(code, grid_size):
-    gridpt = np.zeros([3,], dtype=int)
 
-    num_bits = [ math.ceil(math.log2(size)) for size in grid_size ]
+def morton_code_to_gridpt(code, grid_size):
+    gridpt = np.zeros(
+        [
+            3,
+        ],
+        dtype=int,
+    )
+
+    num_bits = [math.ceil(math.log2(size)) for size in grid_size]
     j = np.uint64(0)
     one = np.uint64(1)
 
     if sum(num_bits) > 64:
-        raise ValueError(f"Unable to represent grids that require more than 64 bits. Grid size {grid_size} requires {num_bits} bits.")
+        raise ValueError(
+            f"Unable to represent grids that require more than 64 bits. Grid size {grid_size} requires {num_bits} bits."
+        )
 
     max_coords = np.max(gridpt, axis=0)
     if np.any(max_coords >= grid_size):
-        raise ValueError(f"Unable to represent grid points larger than the grid. Grid size: {grid_size} Grid points: {gridpt}")
+        raise ValueError(
+            f"Unable to represent grid points larger than the grid. Grid size: {grid_size} Grid points: {gridpt}"
+        )
 
     code = np.uint64(code)
 
     for i in range(max(num_bits)):
         for dim in range(3):
             i = np.uint64(i)
-            if 2 ** i < grid_size[dim]:
+            if 2**i < grid_size[dim]:
                 bit = np.uint64((code >> j) & one)
-                gridpt[dim] += (bit << i)
+                gridpt[dim] += bit << i
                 j += one
 
     return gridpt
+
 
 def compressed_morton_code(gridpt, grid_size):
     """Converts a grid point to a compressed morton code.
@@ -956,6 +1113,7 @@ def compressed_morton_code(gridpt, grid_size):
         return code[0]
     return code
 
+
 def _get_dtype_for_geometry(annotation_type: AnnotationType, rank: int):
     geometry_size = rank if annotation_type == "point" else 2 * rank
     return [("geometry", "<f4", geometry_size)]
@@ -992,7 +1150,7 @@ class AnnotationWriter:
     def __init__(
         self,
         annotation_type: AnnotationType,
-        names: Sequence[str] = ['x', 'y', 'z'],
+        names: Sequence[str] = ["x", "y", "z"],
         scales: Sequence[float] = (1.0, 1.0, 1.0),
         units: [str, Sequence[str]] = "nm",
         relationships: Sequence[str] = (),
