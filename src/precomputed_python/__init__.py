@@ -711,6 +711,36 @@ class AnnotationReader:
         )
         return chunks
 
+    def __get_future_in_chunk(self, spatial_key: str, chunk_index: Sequence[int]):
+        """_summary_
+
+        Args:
+            spatial_key (str): _description_
+            chunk_index (Sequence[int]): _description_
+        """
+        spatial_ts, ts_type = self.spatial_ts_dict.get(spatial_key)
+        if spatial_ts is None:
+            raise ValueError(f"Spatial key '{spatial_key}' not found in the info file.")
+
+        if len(chunk_index) != self.coordinate_space.rank:
+            raise ValueError(
+                f"Expected chunk_index to have length {self.coordinate_space.rank}, but received: {len(chunk_index)}"
+            )
+        spatial_md = next(md for md in self.info["spatial"] if md["key"] == spatial_key)
+        if ts_type == "sharded":
+            grid_shape = spatial_md.get(
+                "grid_shape", spatial_md.get("chunk_shape", None)
+            )
+            mortoncode = compressed_morton_code(
+                chunk_index, np.array(grid_shape, dtype=np.int32)
+            )
+            chunk_key = np.ascontiguousarray(mortoncode, dtype=">u8").tobytes()
+        elif ts_type == "unsharded":
+            chunk_key = "_".join([str(c) for c in chunk_index])
+        else:
+            raise ValueError(f"Unknown spatial type: {ts_type}")
+        return spatial_ts.read(chunk_key)
+
     def read_annotations_in_chunk(
         self,
         spatial_key: str,
@@ -758,35 +788,12 @@ class AnnotationReader:
         Returns:
             pd.DataFrame: DataFrame of annotations in the specified chunk.
         """
-        spatial_ts, ts_type = self.spatial_ts_dict.get(spatial_key)
-        if spatial_ts is None:
-            raise ValueError(f"Spatial key '{spatial_key}' not found in the info file.")
-
-        if len(chunk_index) != self.coordinate_space.rank:
-            raise ValueError(
-                f"Expected chunk_index to have length {self.coordinate_space.rank}, but received: {len(chunk_index)}"
-            )
-        spatial_md = next(md for md in self.info["spatial"] if md["key"] == spatial_key)
-        if ts_type == "sharded":
-            grid_shape = spatial_md.get(
-                "grid_shape", spatial_md.get("chunk_shape", None)
-            )
-            mortoncode = compressed_morton_code(
-                chunk_index, np.array(grid_shape, dtype=np.int32)
-            )
-            chunk_key = np.ascontiguousarray(mortoncode, dtype=">u8").tobytes()
-        elif ts_type == "unsharded":
-            chunk_key = "_".join([str(c) for c in chunk_index])
-        else:
-            raise ValueError(f"Unknown spatial type: {ts_type}")
-        # Read the chunk from the spatial kv store
         try:
-            annbytes = spatial_ts[chunk_key]
+            annbytes = self.__get_future_in_chunk(spatial_key, chunk_index).result()
         except KeyError:
-            # Handle the case where the chunk is not found
             if not suppress_warning:
                 logging.warning(
-                    f"Chunk {chunk_index} not found in spatial store {spatial_key}. Returning empty DataFrame"
+                    f"Chunk {chunk_index} not found in spatial key '{spatial_key}'. Returning empty DataFrame."
                 )
             return self.__empty_df()
         if annbytes == "":
@@ -795,13 +802,14 @@ class AnnotationReader:
             ids = self.__get_multiple_annotation_ids(annbytes)
             return self.get_by_ids(ids)
         # Decode the annotations in the chunk
-        return self.decode_multiple_annotations(annbytes)
+        return annbytes
 
-    def query_spatial_index_in_bounds(
+    def __query_spatial_index_in_bounds(
         self,
         spatial_key: str,
         lower_bound: Sequence[float],
         upper_bound: Sequence[float],
+        get_relationships: bool = False,
     ):
         """Query the spatial index to get overlapping chunks in a bounding box.
 
@@ -816,13 +824,29 @@ class AnnotationReader:
         overlapping_chunks = self.__get_overlapping_chunks(
             spatial_key, lower_bound, upper_bound
         )
-        dfs = []
+        futures = []
         for chunk_index in overlapping_chunks:
-            df = self.read_annotations_in_chunk(
-                spatial_key, chunk_index, suppress_warning=True
-            )
-            if not df.empty:
-                dfs.append(df)
+            futures.append(self.__get_future_in_chunk(spatial_key, chunk_index))
+        # Wait for all futures to complete
+        bytes = []
+        for future in futures:
+            try:
+                bytes.append(future.result())
+            except KeyError:
+                continue
+        if get_relationships:
+            ids = []
+            for annbytes in bytes:
+                ids.extend(self.__get_multiple_annotation_ids(annbytes.value))
+            return self.get_by_ids(ids)
+        dfs = []
+        for annbytes in bytes:
+            if annbytes == "":
+                continue
+            df = self.decode_multiple_annotations(annbytes.value)
+            if df.empty:
+                continue
+            dfs.append(df)
         if len(dfs) == 0:
             return self.__empty_df()
         return pd.concat(dfs)
@@ -935,6 +959,7 @@ class AnnotationReader:
         lower_bound: Sequence[float],
         upper_bound: Sequence[float],
         max_annotations=1_000_000,
+        get_relationships: bool = False,
     ):
         """Get annotations within a bounding box.
 
@@ -943,6 +968,8 @@ class AnnotationReader:
             upper_bound (Sequence[float]): The upper bound of the bounding box.
             max_annotations (int, optional): Maximum number of annotations to return.
                 Defaults to 1_000_000.
+            get_relationships (bool): If True, will include the relationships in the returned DataFrame.
+                This will be slower as it requires downloading each annotation twice. (Default False)
         Returns:
             pd.DataFrame: DataFrame of annotations within the bounding box.
         """
@@ -961,9 +988,13 @@ class AnnotationReader:
         total_annotations = 0
         dfs = []
         for spatial_key in self.spatial_ts_dict.keys():
-            df = self.query_spatial_index_in_bounds(
-                spatial_key, lower_bound, upper_bound
+            df = self.__query_spatial_index_in_bounds(
+                spatial_key,
+                lower_bound,
+                upper_bound,
+                get_relationships=get_relationships,
             )
+            df = self.__post_hoc_spatial_filter(df, lower_bound, upper_bound)
             total_annotations += len(df)
             dfs.append(df)
             if total_annotations > max_annotations:
@@ -975,7 +1006,7 @@ class AnnotationReader:
         if total_annotations > max_annotations:
             df = df.head(max_annotations)
 
-        return self.__post_hoc_spatial_filter(df, lower_bound, upper_bound)
+        return df
 
 
 class ShardSpec(NamedTuple):
