@@ -29,6 +29,7 @@ import numpy as np
 import rtree  # type: ignore
 import asyncio
 import pandas as pd
+from neuroglancer.coordinate_space import CoordinateSpace
 
 __version__ = "0.0.1"
 
@@ -490,7 +491,7 @@ class AnnotationReader:
 
         if relationship not in [rel["id"] for rel in self.info["relationships"]]:
             raise ValueError(
-                f"Invalid relationship '{key}' provided. Must be one of {self.relationship_ts_dict.keys()}"
+                f"Invalid relationship '{relationship}' provided. Must be one of {self.relationship_ts_dict.keys()}"
             )
 
         # Get all annotations
@@ -1246,7 +1247,7 @@ class AnnotationWriter:
         self.lower_bound = np.full(
             shape=(self.rank,), fill_value=float("inf"), dtype=np.float32
         )
-        self.upper_bound = nfp.full(
+        self.upper_bound = np.full(
             shape=(self.rank,), fill_value=float("-inf"), dtype=np.float32
         )
         self.related_annotations = [{} for _ in self.relationships]
