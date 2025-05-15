@@ -12,6 +12,7 @@ up to a few million of annotations, and not beyond that.
 
 """
 
+import asyncio
 import json
 import logging
 import math
@@ -23,12 +24,13 @@ from collections import defaultdict
 from collections.abc import Sequence
 from itertools import product
 from typing import Literal, NamedTuple, Optional, Union, cast
-import yaml
-from jsonschema import validate, RefResolver, ValidationError
+
 import numpy as np
-import rtree  # type: ignore
-import asyncio
 import pandas as pd
+import rtree  # type: ignore
+import yaml
+from jsonschema import RefResolver, ValidationError, validate
+from neuroglancer.coordinate_space import CoordinateSpace
 
 __version__ = "0.0.1"
 
@@ -41,9 +43,9 @@ except ImportError:
     )
     ts = None
 
-from neuroglancer import coordinate_space, viewer_state
 import yaml
-from jsonschema import validate, RefResolver, ValidationError
+from jsonschema import RefResolver, ValidationError, validate
+from neuroglancer import coordinate_space, viewer_state
 
 
 def load_schemas():
@@ -490,7 +492,7 @@ class AnnotationReader:
 
         if relationship not in [rel["id"] for rel in self.info["relationships"]]:
             raise ValueError(
-                f"Invalid relationship '{key}' provided. Must be one of {self.relationship_ts_dict.keys()}"
+                f"Invalid relationship '{relationship}' provided. Must be one of {self.relationship_ts_dict.keys()}"
             )
 
         # Get all annotations
@@ -1225,9 +1227,9 @@ class AnnotationWriter:
         )
         self.properties.sort(key=lambda p: -_PROPERTY_DTYPES[p.type][1])
         self.annotations = []
-        self.rank = coordinate_space.rank
+        self.rank = self.coordinate_space.rank
         self.dtype = _get_dtype_for_geometry(
-            annotation_type, coordinate_space.rank
+            annotation_type, self.coordinate_space.rank
         ) + _get_dtype_for_properties(self.properties)
 
         # if chunk_size is an integer, then make it a sequence
@@ -1246,7 +1248,7 @@ class AnnotationWriter:
         self.lower_bound = np.full(
             shape=(self.rank,), fill_value=float("inf"), dtype=np.float32
         )
-        self.upper_bound = nfp.full(
+        self.upper_bound = np.full(
             shape=(self.rank,), fill_value=float("-inf"), dtype=np.float32
         )
         self.related_annotations = [{} for _ in self.relationships]
@@ -1373,7 +1375,8 @@ class AnnotationWriter:
 
         for i, p in enumerate(self.properties):
             if p.id in kwargs:
-                encoded[()][f"property{i}"] = kwargs.pop(p.id)
+                # encoded[()][f"property{i}"] = kwargs.pop(p.id)
+                encoded[()][p.id] = kwargs.pop(p.id)
 
         related_ids = []
         for relationship in self.relationships:
