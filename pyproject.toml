@@ -10,11 +10,12 @@ readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
     "jsonschema>=4.23.0",
-    "neuroglancer>=2.40.1",
+    "neuroglancer>=2.41.2",
     "pandas>=2.2.3",
     "rtree>=1.4.0",
     "ruff>=0.11.2",
     "tensorstore>=0.1.69",
+    "tornado==6.4.2"
 ]
 authors = [
     { name = "Forrest Collman", email = "forrest.collman@gmail.com" },
@@ -42,6 +43,17 @@ lint = [
 profile = [
     "scalene",
     "pyinstrument",
+]
+distributed-annotations = [
+    "dask[distributed]>=2024.1.0",
+    "mmh3>=4.0.0",
+]
+distributed-annotations-gcp = [
+    "dask[distributed]>=2024.1.0",
+    "dask-cloudprovider[gcp]>=2024.1.0",
+    "cryptography",
+    "gcsfs>=2024.1.0",
+    "mmh3>=4.0.0",
 ]
 
 [tool.uv]
