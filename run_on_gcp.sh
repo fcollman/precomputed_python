@@ -13,7 +13,7 @@
 set -e
 
 # Configuration - adjust these as needed
-DOCKER_IMAGE="${DOCKER_IMAGE:-caveconnectome/precomputed-python-dask:latest}"
+DOCKER_IMAGE="${DOCKER_IMAGE:-caveconnectome/precomputed-python-dask:v2}"
 GCP_PROJECT="${GCP_PROJECT:-$(gcloud config get-value project 2>/dev/null || echo '')}"
 GCP_ZONE="${GCP_ZONE:-us-east1-b}"
 
