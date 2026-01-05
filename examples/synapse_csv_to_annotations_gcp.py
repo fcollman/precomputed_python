@@ -456,10 +456,56 @@ def main():
         print("  Creating GCPCluster (this may take a few minutes for VMs to start)...")
         cluster = GCPCluster(**cluster_kwargs)
         
+        print("  GCPCluster created")
+        print("  Waiting for scheduler to be ready...")
+        print("  Note: This may take 2-5 minutes for the VM to start and scheduler to initialize")
+        
+        # Poll for scheduler address with progress updates
+        import sys
+        import time as time_module
+        scheduler_timeout = 600  # 10 minutes
+        start_time = time_module.time()
+        last_print = 0
+        
+        while True:
+            try:
+                scheduler_address = getattr(cluster, 'scheduler_address', None)
+                if scheduler_address:
+                    print(f"  Scheduler address found: {scheduler_address}")
+                    break
+            except Exception:
+                pass  # scheduler_address might not be available yet
+            
+            elapsed = time_module.time() - start_time
+            if elapsed > scheduler_timeout:
+                print(f"\n  ERROR: Scheduler did not become ready within {scheduler_timeout}s")
+                print(f"  Check scheduler VM in GCP Console")
+                print(f"  SSH to scheduler VM and run: sudo docker ps -a")
+                print(f"  Then check logs: sudo docker logs <container-id>")
+                raise TimeoutError("Scheduler did not become ready")
+            
+            # Print progress every 15 seconds
+            if elapsed - last_print >= 15:
+                print(f"  Still waiting for scheduler... ({int(elapsed)}s elapsed)")
+                sys.stdout.flush()
+                last_print = elapsed
+            
+            time_module.sleep(2)
+        
         print("  Connecting to cluster...")
-        print("  Note: If using extra_bootstrap, the scheduler may take 5-10 minutes to start")
-        print("        while packages are being installed.")
-        client = Client(cluster)
+        sys.stdout.flush()
+        
+        try:
+            # Client() will connect to the scheduler
+            client = Client(cluster, timeout=120)  # 2 minute timeout for connection
+        except Exception as e:
+            print(f"\n  ERROR: Failed to connect to cluster: {e}")
+            print(f"  Scheduler address: {scheduler_address}")
+            print(f"  Troubleshooting:")
+            print(f"    1. Check scheduler VM logs: sudo docker logs <scheduler-container>")
+            print(f"    2. Verify firewall rules allow traffic on ports 8786-8787")
+            print(f"    3. Check if scheduler is accessible: curl http://{scheduler_address.split('://')[1].split(':')[0]}:8787/status")
+            raise
         
         print(f"  Cluster connection established")
         print(f"  Dashboard: {client.dashboard_link}")
