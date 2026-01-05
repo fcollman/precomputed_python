@@ -48,6 +48,11 @@ RUN python -c "import precomputed_python; import dask; import dask_cloudprovider
 # Set working directory back to /app for running scripts
 WORKDIR /app
 
+# Expose Dask ports (documentation - dask-cloudprovider handles actual port mapping)
+# Port 8786: Dask scheduler
+# Port 8787: Dask dashboard
+EXPOSE 8786 8787
+
 # Use tini as entrypoint for proper signal handling (required by dask-cloudprovider)
 # dask-cloudprovider will override CMD with dask-scheduler or dask-worker commands
 ENTRYPOINT ["tini", "--"]
