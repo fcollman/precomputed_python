@@ -24,14 +24,14 @@ Python Environment Setup:
     the first run will be slower as packages are installed.
 
 Network Connectivity:
-    IMPORTANT: This script must be run from within the GCP network (e.g., Cloud Shell
-    or a VM in the same project) OR you must configure firewall rules to allow access
-    to ports 8786-8787 from your IP address.
+    IMPORTANT: This script uses public_ingress=True by default, which means:
+    - VMs will have external IP addresses
+    - Connections will use external IPs (required for Cloud Shell)
+    - Firewall rules are automatically configured by dask-cloudprovider
     
-    The scheduler listens on an internal IP by default. To connect from outside GCP:
-    1. Run from Cloud Shell: gcloud cloud-shell ssh
-    2. Or run from a VM in the same project
-    3. Or configure firewall rules and ensure public_ingress=True (default)
+    Cloud Shell is NOT on the same VPC network as the VMs, so public_ingress=True
+    is required when running from Cloud Shell. If running from a VM in the same VPC,
+    you can use --gcp-no-public-ingress for better security (internal-only networking).
 """
 
 import logging
@@ -296,6 +296,13 @@ def main():
         help="Extra bootstrap commands to run on workers (e.g., pip install commands). "
              "Example: 'pip install neuroglancer tensorstore gcsfs'",
     )
+    parser.add_argument(
+        "--gcp-no-public-ingress",
+        action="store_true",
+        help="Disable public IP addresses (use internal networking only). "
+             "Only use this if running from a VM in the same VPC network. "
+             "Default: public_ingress=True (required for Cloud Shell)",
+    )
     
     # Dask worker configuration
     parser.add_argument(
@@ -434,7 +441,11 @@ def main():
             # Explicitly set GPU parameters to 0 (int) to avoid config issues
             'scheduler_ngpus': 0,
             'worker_ngpus': 0,
-            'ngpus': 0
+            'ngpus': 0,
+            # Use public IP for connectivity (required when running from Cloud Shell)
+            # Cloud Shell is not on the same VPC network as the VMs, so we need external IP
+            # Can be disabled with --gcp-no-public-ingress if running from same VPC
+            'public_ingress': not args.gcp_no_public_ingress,
         }
         
         # Configure Docker image (if custom image specified)
