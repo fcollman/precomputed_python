@@ -7,7 +7,7 @@ name = "precomputed_python"
 version = "0.0.1"
 description = "For simplifying reading and writing precomputed format with python"
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 dependencies = [
     "jsonschema>=4.23.0",
     "neuroglancer>=2.41.2",
