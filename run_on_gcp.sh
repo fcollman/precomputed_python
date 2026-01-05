@@ -50,7 +50,7 @@ fi
 
 # Run the script with the Docker image
 # The script will handle creating the Dask cluster
-docker run -i $DOCKER_IMAGE python3/app/precomputed_python/examples/synapse_csv_to_annotations_gcp.py \
+docker run -i $DOCKER_IMAGE python3 app/precomputed_python/examples/synapse_csv_to_annotations_gcp.py \
     --gcp-project "$GCP_PROJECT" \
     --gcp-docker-image "$DOCKER_IMAGE" \
     --gcp-zone "$GCP_ZONE" \
